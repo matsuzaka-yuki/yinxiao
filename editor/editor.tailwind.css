@@ -1,0 +1,48 @@
+/* 只在这里声明一次：Tailwind 引擎 + 主题 token。
+   token 用 CSS 变量 + @theme inline，切 .dark 类就能整站换肤（黑白两套）。 */
+/* source(none)：关掉 Tailwind 的自动扫描，只认下面显式声明的源文件。
+   否则它会顺手把仓库里别处（比如上一次的构建产物 lib/editor.html）也算进内容，
+   构建结果就会随目录里躺着什么文件而变化 —— 不可复现。 */
+@import "tailwindcss" source(none);
+@source "./editor.src.html";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {                       /* 浅色：纸白 */
+  --c-bg:     #fbfbfc;
+  --c-panel:  #ffffff;
+  --c-raised: #f4f4f5;
+  --c-line:   #e4e4e7;
+  --c-fg:     #09090b;
+  --c-dim:    #71717a;
+  --c-faint:  #a1a1aa;
+}
+.dark {                       /* 深色：墨黑 */
+  --c-bg:     #09090b;
+  --c-panel:  #0c0c0e;
+  --c-raised: #151518;
+  --c-line:   #242428;
+  --c-fg:     #fafafa;
+  --c-dim:    #8b8b93;
+  --c-faint:  #5b5b62;
+}
+@theme inline {
+  --color-bg:     var(--c-bg);
+  --color-panel:  var(--c-panel);
+  --color-raised: var(--c-raised);
+  --color-line:   var(--c-line);
+  --color-fg:     var(--c-fg);
+  --color-dim:    var(--c-dim);
+  --color-faint:  var(--c-faint);
+  --font-mono: ui-monospace, "JetBrains Mono", "Noto Sans Mono CJK SC", monospace;
+}
+
+/* 细滚动条、滑块、开关：黑白面板的细节 */
+* { scrollbar-width: thin; scrollbar-color: var(--c-line) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--c-line); border-radius: 99px; }
+input[type=range] { -webkit-appearance: none; appearance: none; height: 2px; background: var(--c-line); border-radius: 99px; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 99px;
+  background: var(--c-fg); border: 2px solid var(--c-panel); cursor: pointer; }
+input[type=range]:disabled { opacity: .35; }
+input[type=range]:disabled::-webkit-slider-thumb { cursor: default; }
+canvas { display: block; touch-action: none; }

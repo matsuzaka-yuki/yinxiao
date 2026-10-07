@@ -47,13 +47,17 @@ try:
 except ImportError:
     print("  （无 numpy：IR 生成走纯 Python 路径，约需 1 分钟）")
 PY
-pw_ver="$(pipewire --version 2>/dev/null | head -1 || true)"
+pw_ver="$(pipewire --version 2>/dev/null | grep -i 'compiled with' | head -1 || true)"
 say "PipeWire: ${pw_ver:-未知}"
-PLUGIN="$(ls /usr/lib*/spa-0.2/filter-graph/libspa-filter-graph-plugin-builtin.so \
-             /usr/lib/*/spa-0.2/filter-graph/libspa-filter-graph-plugin-builtin.so 2>/dev/null | head -1 || true)"
-if [ -n "$PLUGIN" ] && ! strings "$PLUGIN" 2>/dev/null | grep -q '^convolver$'; then
-    warn "这个 builtin 插件里没有 convolver —— 4 个厅堂混响预设会加载失败，"
-    warn "其余 17 个 EQ/矩阵预设不受影响。"
+PLUGIN="$(ls /usr/lib*/spa-0.2/filter-graph/libspa-filter-graph-plugin-builtin.so 2>/dev/null | head -1 || true)"
+# 注意：不要写成 strings ... | grep -q —— pipefail 下 grep -q 提前退出会让 strings
+# 吃到 SIGPIPE，整个管道被判失败，于是“有 convolver”被误报成“没有”。
+if [ -n "$PLUGIN" ]; then
+    n_conv="$(strings "$PLUGIN" 2>/dev/null | grep -c '^convolver$' || true)"
+    if [ "${n_conv:-0}" -eq 0 ]; then
+        warn "这个 builtin 插件里没有 convolver —— 4 个厅堂混响预设会加载失败，"
+        warn "其余 17 个 EQ/矩阵预设不受影响。"
+    fi
 fi
 
 # ---------------------------------------------------------------- 1. 物理声卡
@@ -61,21 +65,27 @@ list_physical() {
     pactl list short sinks | awk '{print $2}' | grep -v "^${PREFIX}" | grep -vi hdmi
 }
 detect_sink() {
+    # 顺序：显式指定 > 上次记录的（重装/换预设不会跳变）> 当前默认 > 唯一候选 > 优先 USB
+    # 全程不提问：安装脚本不该卡住等人，选错了用 --sink 覆盖并会打印出来。
     [ -n "$SINK" ] && { echo "$SINK"; return; }
-    local s; s="$(pactl get-default-sink 2>/dev/null || true)"
+    local s
+    if [ -r "$DATA/hw-sink" ]; then
+        s="$(head -1 "$DATA/hw-sink")"
+        pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$s" && { echo "$s"; return; }
+    fi
+    s="$(pactl get-default-sink 2>/dev/null || true)"
     case "$s" in
-        ${PREFIX}*) ;;                       # 默认就是音效 sink，不能用作物理声卡
-        "") ;;
+        ${PREFIX}*|"") ;;
         *) echo "$s"; return ;;
     esac
     local -a cands; mapfile -t cands < <(list_physical)
-    if [ "${#cands[@]}" -eq 1 ]; then echo "${cands[0]}"; return; fi
+    [ "${#cands[@]}" -eq 1 ] && { echo "${cands[0]}"; return; }
     if [ "${#cands[@]}" -gt 1 ]; then
-        echo "检测到多个物理输出，请选一个（或 Ctrl-C 后用 --sink 指定）:" >&2
-        local i=0
-        for c in "${cands[@]}"; do echo "  [$i] $c" >&2; i=$((i+1)); done
-        read -rp "序号: " pick >&2
-        echo "${cands[${pick:-0}]}"; return
+        local c
+        for c in "${cands[@]}"; do
+            case "$c" in *usb*|*USB*) echo "$c"; return ;; esac
+        done
+        echo "${cands[0]}"; return
     fi
     echo ""
 }
@@ -86,6 +96,8 @@ if [ -z "$HWSINK" ]; then
     exit 1
 fi
 say "物理声卡: $HWSINK"
+[ -r "$DATA/hw-sink" ] && [ "$(head -1 "$DATA/hw-sink")" != "$HWSINK" ] && \
+    warn "与上次记录的不同（要换用 --sink 指定）"
 
 # ---------------------------------------------------------------- 2. 装文件
 say "安装文件到 $DATA"

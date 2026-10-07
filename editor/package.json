@@ -1,0 +1,12 @@
+{
+  "name": "yinxiao-editor",
+  "private": true,
+  "description": "开发期构建链：Tailwind CLI 编译 CSS，再把 CSS 与 Preact/htm 内联进单文件 lib/editor.html",
+  "scripts": {
+    "build": "bash build.sh"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}

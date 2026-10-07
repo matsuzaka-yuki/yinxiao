@@ -6,9 +6,9 @@ native `filter-chain`. 21 presets stay resident; switching is just re-pointing t
 sink, so **no service restart, no audio drop-out**.
 
 * **21 presets** — bass / vocal / genre / spatial / **convolution reverb halls** (concert, concert hall, live house, cathedral)
-* **Web curve editor** — drag points to tune EQ, audition live, watch the response curve
+* **Web curve editor** — drag points to tune EQ, audition live, watch the response curve; monochrome light/dark themes, headroom always visible
 * **Provably no clipping** — every preset has a verified worst-case gain bound σmax ≤ 1
-* **No third-party runtime deps** — pure Python standard library (numpy optional, only speeds up IR synthesis)
+* **Zero install-time deps** — Python standard library only (numpy optional, only speeds up IR synthesis); the UI ships as one self-contained file with no external requests at runtime (Tailwind and Preact/htm are inlined), so it works offline and needs no node
 * **Self-healing** — replug your USB DAC and the routing + last effect come back automatically
 
 ```bash
@@ -85,10 +85,12 @@ yinxiao heal             # daemon: recover automatically when the DAC drops and 
 ```
 
 **Editor** (`http://127.0.0.1:8787`): click a preset to switch to it immediately; drag points
-to tune frequency/gain, scroll for Q, `Del` to remove a band. The green envelope is the
-worst-case gain σmax, so you can see the remaining headroom at a glance. With
-"auto-normalise" on, the preamp is recomputed as you edit — you cannot clip it by dragging.
-Hall presets show a reverb panel instead (dry/wet live, RT60 / pre-delay read-only).
+to tune frequency/gain, scroll for Q, `Del` to remove a band. A permanent status bar under the
+canvas shows preamp, σmax (the analytic bound for halls), remaining headroom and a verdict, so
+headroom never hides behind a narrow window. With "auto-normalise" on, the preamp is recomputed
+as you edit — you cannot clip it by dragging. The dock switches panels by preset type:
+EQ bands / widening matrix / convolution reverb (live dry-wet, 1 kHz wet-dry readback, RT60).
+One button flips between the black and white themes.
 
 ## Design notes
 
@@ -137,6 +139,15 @@ python3 ~/.local/share/yinxiao/e2e_reverb.py      # end-to-end reverb measuremen
 * `install.sh` regenerates the confs from the repo's parameters; back up anything you tuned in
   the editor first (every save leaves a `.bak`).
 
+## Front-end build
+
+`lib/editor.html` is a build product: one self-contained file with Tailwind CSS and
+Preact/htm inlined. Edit `editor/editor.src.html` and run `bash editor/build.sh`
+(node required — development only; installing never needs node). The build is idempotent:
+two consecutive builds are byte-identical.
+
 ## License
 
-MIT
+MIT. The front-end artifact inlines two MIT-licensed libraries — [Tailwind CSS](https://tailwindcss.com)
+and [Preact](https://preactjs.com) 10 + [htm](https://github.com/developit/htm); sources live under
+`editor/vendor/` with their license texts. Nothing on the Python side has third-party dependencies.

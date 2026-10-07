@@ -42,3 +42,25 @@ jobs:
           echo
           echo "=== 厅堂混响 4 个 ==="
           python3 lib/eval_graph.py /tmp/yxreverb
+
+  editor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # lib/editor.html 是提交进仓库的构建产物：这里重建一次，
+      # 与提交的版本比对，防止「改了源码忘了重新构建」
+      - name: 重建单文件编辑器并比对
+        run: |
+          bash editor/build.sh
+          if ! git diff --exit-code -- lib/editor.html; then
+            echo "::error::lib/editor.html 与 editor/ 源码不一致 —— 请在本地跑 bash editor/build.sh 后提交"
+            exit 1
+          fi
+          echo "✔ 构建产物与源码一致"
