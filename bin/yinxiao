@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# yinxiao —— PipeWire 音效预设切换（QQ音乐/蝰蛇音效 风格）
+# 用法:
+#   yinxiao list            列出全部预设
+#   yinxiao <预设>          切到该预设（支持 id 或中文名，前缀匹配）
+#   yinxiao off             关掉音效，回到物理声卡直通
+#   yinxiao status          查看当前状态
+#   yinxiao next / prev     循环切换
+#   yinxiao edit            打开可视化编辑器（拖曲线改参数，实时试听）
+#   yinxiao edit-stop       关闭编辑器服务
+#   yinxiao fix             修复被搬歪的链路（预设输出重新接回物理声卡）
+#   yinxiao heal            守护进程：DAC 掉线再上线时自动恢复（开机自启用它）
+set -uo pipefail
+
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/yinxiao"
+MANIFEST="$DATA/presets.tsv"
+PREFIX="effect_input.yx_"
+
+c_g=$'\033[32m'; c_y=$'\033[33m'; c_b=$'\033[36m'; c_d=$'\033[2m'; c_r=$'\033[0m'
+
+die() { echo "错误: $*" >&2; exit 1; }
+
+sink_of() { echo "${PREFIX}${1//-/_}"; }
+
+hw_sink() {
+    # 1) 安装时记录的物理默认设备（最可靠）
+    if [ -r "$DATA/hw-sink" ]; then
+        local r; read -r r < "$DATA/hw-sink"
+        [ -n "${r:-}" ] && { echo "$r"; return; }
+    fi
+    # 2) 当前默认若不是音效 sink，就是它
+    local s; s="$(pactl get-default-sink)"
+    case "$s" in ${PREFIX}*) ;; *) echo "$s"; return ;; esac
+    # 3) 兜底：非音效 sink，优先非 HDMI
+    s=$(pactl list short sinks | awk '{print $2}' | grep -v "^${PREFIX}" | grep -v 'hdmi' | head -1)
+    [ -n "$s" ] || s=$(pactl list short sinks | awk '{print $2}' | grep -v "^${PREFIX}" | head -1)
+    echo "$s"
+}
+
+sink_exists() { pactl list short sinks | awk '{print $2}' | grep -qx "$1"; }
+
+cur_sink() { pactl get-default-sink; }
+
+rows() { grep -v '^#' "$MANIFEST" | grep -v '^$'; }
+
+resolve() {
+    local q="$1" id
+    # 1) 精确 id
+    id=$(rows | awk -F'\t' -v q="$q" '$1==q{print $1; exit}')
+    # 2) 精确中文名
+    [ -n "$id" ] || id=$(rows | awk -F'\t' -v q="$q" '$2==q{print $1; exit}')
+    # 3) id 前缀
+    [ -n "$id" ] || id=$(rows | awk -F'\t' -v q="$q" 'index($1,q)==1{print $1; exit}')
+    # 4) 中文名包含
+    [ -n "$id" ] || id=$(rows | awk -F'\t' -v q="$q" 'index($2,q)>0{print $1; exit}')
+    echo "$id"
+}
+
+# pw-link -l 的段落形如:
+#   <端口>
+#     |-> <目标>      (出边)
+#     |<- <来源>      (入边)
+# 必须按"新段落头"重置，否则会把后续段落的连线算到前一个端口上。
+link_pairs() {
+    # 注意：pw-link -l 会把每条连线列两次（源端口下 |->、目标端口下 |<-），
+    # 只取出边视角，否则同一连线会被数成两条。
+    pw-link -l 2>/dev/null | awk '
+        /^[^ \t]/     { cur = $0; next }
+        /^[ \t]+\|->/ { print cur " " $2; next }
+    '
+}
+
+# 把 port 接到 tgt 并自我校验：pipewire 的 link/unlink 是异步的，
+# 紧接着断连就重连会失败，所以必须重试到真的连上为止。
+link_to_target() {
+    local port="$1" tgt="$2" i
+    for i in 1 2 3 4; do
+        link_pairs | awk -v p="$port" -v t="$tgt" '$1 == p && $2 == t { f = 1 } END { exit !f }' && return 0
+        pw-link "$port" "$tgt" 2>/dev/null
+        sleep 0.15
+    done
+    link_pairs | awk -v p="$port" -v t="$tgt" '$1 == p && $2 == t { f = 1 } END { exit !f }'
+}
+
+notify() {
+    command -v notify-send >/dev/null 2>&1 || return 0
+    notify-send -a yinxiao -i audio-card "$1" "${2:-}" 2>/dev/null || true
+}
+
+# 只列出"应用"的播放流。务必排除 yinxiao 自己的 17 个预设输出流，
+# 否则会把它们从物理声卡上搬走，导致系统彻底没声音。
+app_streams() {
+    pactl list sink-inputs 2>/dev/null | awk '
+        /^Sink Input #[0-9]+$/ {
+            if (cur != "" && !skip) print cur
+            cur = $3; sub(/#/, "", cur); skip = 0; next
+        }
+        /node\.name = "effect_output\./ { skip = 1 }
+        /node\.passive = "true"/          { skip = 1 }
+        END { if (cur != "" && !skip) print cur }
+    '
+}
+
+# 把 17 个预设输出重新接回物理声卡（修被搬歪的链路）
+relink_outputs() {
+    local hw="$1" n ch dst fail=0
+    # 目标设备不在时绝不能动链路：断开了又接不上会让当前在放的音频直接断掉
+    if ! sink_exists "$hw"; then
+        echo "${c_y}目标设备不在系统里，未改动任何链路:${c_r} ${c_d}$hw${c_r}" >&2
+        return 1
+    fi
+    for n in $(pw-link -o 2>/dev/null | grep '^effect_output\.' | sed 's/:.*//' | sort -u); do
+        for ch in FL FR; do
+            pw-link -o 2>/dev/null | grep -qx "$n:output_$ch" || continue
+            # 先断开该端口的全部连接：重复连接会把同一路信号叠加多次（实测出现过
+            # 同一声道 9 条连接，等于 +19dB，必然削顶），也会留下指向 cava 之类的垃圾连线
+            link_pairs | awk -v pat="$n:output_$ch" '$1 == pat { print $2 }' \
+                | while read -r dst; do
+                    [ -n "$dst" ] && pw-link -d "$n:output_$ch" "$dst" 2>/dev/null
+                done
+            sleep 0.05
+            link_to_target "$n:output_$ch" "$hw:playback_$ch" || fail=$((fail + 1))
+        done
+    done
+    if [ "$fail" != "0" ]; then
+        echo "${c_y}⚠ 有 $fail 个端口没能接回，可再执行一次 yinxiao fix${c_r}" >&2
+        return 1
+    fi
+    return 0
+}
+
+apply() {
+    local target="$1" label="$2"
+    if ! sink_exists "$target"; then
+        case "$target" in
+            alsa_output.*)
+                die "物理输出设备 '$target' 不在系统里（USB 没枚举成功 / 被拔了）。
+     查: lsusb; journalctl -b | grep -i 'usb.*error'；接回后执行 yinxiao fix" ;;
+            *)
+                die "sink '$target' 不存在（预设没加载？试 systemctl --user restart pipewire）" ;;
+        esac
+    fi
+    pactl set-default-sink "$target"
+    # 把正在播放的流也搬过去
+    while read -r si; do
+        [ -n "$si" ] && pactl move-sink-input "$si" "$target" 2>/dev/null
+    done < <(app_streams)
+    echo "$target" > "$DATA/last-target" 2>/dev/null || true
+    echo "${c_g}▶ 已切换到:${c_r} ${c_b}${label}${c_r}"
+    echo "  ${c_d}sink: $target${c_r}"
+}
+
+do_status() {
+    local cur hw
+    cur="$(cur_sink)"
+    hw="$(hw_sink)"
+    if [[ "$cur" == ${PREFIX}* ]]; then
+        id="${cur#${PREFIX}}"
+        nm=$(rows | awk -F'\t' -v i="${id//_/-}" '$1==i{print $2}')
+        pa=$(rows | awk -F'\t' -v i="${id//_/-}" '$1==i{print $3}')
+        echo "${c_g}音效已开启${c_r}: ${c_b}${nm:-$id}${c_r}  ${c_d}(preamp ${pa}dB)${c_r}"
+    else
+        echo "${c_y}音效已关闭${c_r}: 直通 ${c_d}$cur${c_r}"
+    fi
+    echo "${c_d}默认输出: $cur${c_r}"
+    # 链路健康：每个预设输出应恰好 1 条连接、且指向物理设备
+    if [ -n "$hw" ] && sink_exists "$hw"; then
+        bad=$( {
+            pw-link -o 2>/dev/null | grep '^effect_output\.' | sed 's/^/P /'
+            link_pairs | awk '$1 ~ /^effect_output\./ { print "L " $1 " " $2 }'
+        } | awk -v hw="$hw" '
+            $1 == "P" { want[$2] = 1; next }
+            $1 == "L" { got[$2]++; dst[$2] = $3; next }
+            END {
+                n = 0
+                for (k in want) {
+                    ch = substr(k, length(k) - 1)                 # FL / FR
+                    if (got[k] != 1 || dst[k] != hw ":playback_" ch) n++
+                }
+                print n + 0
+            }')
+        if [ "$bad" != "0" ]; then
+            echo "${c_y}⚠ 有 $bad 个预设输出链路异常（重复连接或接错设备）—— 执行 yinxiao fix${c_r}"
+        fi
+    fi
+    # 物理设备若不在，一切音效都听不到——这是最常见的"没声音"原因
+    if [ -n "$hw" ] && ! sink_exists "$hw"; then
+        echo
+        echo "${c_r}⚠ 物理输出设备不在系统里:${c_r} ${c_d}$hw${c_r}"
+        echo "${c_y}  声音不会从这台设备出来。检查 USB 线/接口/供电，或换一个口。${c_r}"
+        echo "${c_d}  接回后执行: yinxiao fix${c_r}"
+    fi
+}
+
+# 守护：USB DAC 掉线再上线时，自动把链路和输出恢复回去。
+# 只在"状态发生变化"时动作，所以不会跟你手动切换设备打架。
+heal_loop() {
+    local hw="${1:-$(hw_sink)}" want now streak="" n=0 last=""
+    [ -n "$hw" ] || die "找不到 $DATA/hw-sink"
+    if sink_exists "$hw"; then last="up"; else last="down"; fi
+    echo "${c_d}守护中: $hw（启动时 $last）${c_r}"
+    while :; do
+        if sink_exists "$hw"; then now="up"; else now="down"; fi
+        if [ "$now" = "$streak" ]; then
+            n=$((n + 1))
+        else
+            streak="$now"; n=1
+        fi
+        # 连续两次判定一致才算状态真的变了（避开 pipewire 重启时的假抖动）
+        if [ "$n" -ge 2 ] && [ "$streak" != "$last" ]; then
+            if [ "$streak" = "up" ]; then
+                relink_outputs "$hw" >/dev/null 2>&1
+                want="$(cat "$DATA/last-target" 2>/dev/null || true)"
+                if [ -n "$want" ] && sink_exists "$want"; then
+                    pactl set-default-sink "$want" 2>/dev/null
+                    while read -r si; do
+                        [ -n "$si" ] && pactl move-sink-input "$si" "$want" 2>/dev/null
+                    done < <(app_streams)
+                fi
+                notify "USB DAC 已就绪" "音效链路与输出已自动恢复"
+                echo "$(date '+%H:%M:%S') DAC 上线，已自愈 -> ${want:-$hw}"
+            else
+                notify "USB DAC 掉线" "声音会暂时跑到别的输出设备，重新插好后自动恢复"
+                echo "$(date '+%H:%M:%S') DAC 掉线"
+            fi
+            last="$streak"
+        fi
+        sleep 5
+    done
+}
+
+case "${1:-list}" in
+    list|-l|"")
+        echo "${c_b}音效预设${c_r}  ${c_d}(yinxiao <名称> 切换, yinxiao off 关闭)${c_r}"
+        echo
+        cur="$(cur_sink)"
+        while IFS=$'\t' read -r id name preamp desc; do
+            [ "$id" = "#id" ] && continue
+            if [ "$(sink_of "$id")" = "$cur" ]; then mark="${c_g}●${c_r}"; else mark=" "; fi
+            printf " %s %-16s %-10s %s\n" "$mark" "$id" "$name" "${c_d}${desc}${c_r}"
+        done < <(rows)
+        echo
+        echo " ${c_d}当前: $cur${c_r}"
+        ;;
+    off|none|raw)
+        t="$(hw_sink)"
+        [ -n "$t" ] || die "找不到物理输出设备"
+        if ! sink_exists "$t"; then
+            # 配置的物理设备不在（USB 没枚举成功/被拔），退到任一现存的真实输出设备
+            alt="$(pactl list short sinks 2>/dev/null | awk '$2 ~ /^alsa_output\./ {print $2}' | head -1)"
+            echo "${c_y}⚠ 配置的物理设备不在系统里:${c_r} ${c_d}$t${c_r}" >&2
+            [ -n "$alt" ] || die "系统里也没有其它真实输出设备了"
+            echo "${c_y}  临时退到: $alt${c_r}" >&2
+            t="$alt"
+        fi
+        apply "$t" "直通（无音效）"
+        ;;
+    status)
+        do_status
+        ;;
+    next|prev)
+        cur="$(cur_sink)"; ids=(); while IFS=$'\t' read -r id _; do [ "$id" = "#id" ] || ids+=("$id"); done < <(rows)
+        idx=-1; for i in "${!ids[@]}"; do [ "$(sink_of "${ids[$i]}")" = "$cur" ] && idx=$i; done
+        if [ "${1}" = next ]; then n=$(( (idx + 1) % ${#ids[@]} )); else n=$(( (idx - 1 + ${#ids[@]}) % ${#ids[@]} )); fi
+        id="${ids[$n]}"; nm=$(rows | awk -F'\t' -v i="$id" '$1==i{print $2}')
+        apply "$(sink_of "$id")" "$nm"
+        ;;
+    heal|watch|daemon)
+        heal_loop "${2:-}"
+        ;;
+    fix|repair)
+        HW=$(cat "$DATA/hw-sink" 2>/dev/null)
+        [ -n "$HW" ] || die "找不到 $DATA/hw-sink"
+        relink_outputs "$HW" || die "物理设备接不回来，先接好硬件再说"
+        echo "${c_g}已把预设输出重新接回:${c_r} $HW"
+        do_status
+        ;;
+    edit-stop)
+        # 开机自启时编辑器由 systemd 托管，必须走 systemctl，直接 kill 会被 Restart=always 拉起来
+        if systemctl --user is-active --quiet yinxiao-editor.service 2>/dev/null; then
+            systemctl --user stop yinxiao-editor.service && echo "编辑器已停止（systemd 服务，重启或 ${c_b}systemctl --user start yinxiao-editor${c_r} 可再开）"
+            exit 0
+        fi
+        PIDF="$DATA/editor.pid"
+        if [ -r "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
+            kill "$(cat "$PIDF")" && echo "编辑器已停止"
+        else
+            echo "编辑器未在运行"
+        fi
+        rm -f "$PIDF"
+        ;;
+    edit|editor|gui)
+        PORT="${YINXIAO_PORT:-8787}"
+        PIDF="$DATA/editor.pid"
+        was_up=0
+        curl -sf -o /dev/null "http://127.0.0.1:$PORT/api/state" 2>/dev/null && was_up=1
+        if [ "$was_up" = 0 ]; then
+            if [ -r "$PIDF" ] && ! kill -0 "$(cat "$PIDF")" 2>/dev/null; then rm -f "$PIDF"; fi
+            if systemctl --user list-unit-files yinxiao-editor.service >/dev/null 2>&1 &&
+               systemctl --user cat yinxiao-editor.service >/dev/null 2>&1; then
+                # 装了自启服务就走 systemd，避免出现"服务外的野进程"
+                systemctl --user start yinxiao-editor.service
+            else
+                nohup python3 "$DATA/editor_server.py" >"$DATA/editor.log" 2>&1 &
+            fi
+            for _ in $(seq 1 30); do
+                sleep 0.2
+                curl -sf -o /dev/null "http://127.0.0.1:$PORT/api/state" 2>/dev/null && break
+            done
+        fi
+        if curl -sf -o /dev/null "http://127.0.0.1:$PORT/api/state" 2>/dev/null; then
+            if [ "$was_up" = 1 ]; then echo "${c_g}编辑器已在运行${c_r}: ${c_b}http://127.0.0.1:$PORT${c_r}"; else echo "${c_g}编辑器已启动${c_r}: ${c_b}http://127.0.0.1:$PORT${c_r}"; fi
+            xdg-open "http://127.0.0.1:$PORT" >/dev/null 2>&1 &
+        else
+            echo "启动失败，日志: $DATA/editor.log" >&2; tail -5 "$DATA/editor.log" >&2; exit 1
+        fi
+        ;;
+    -h|--help|help)
+        sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        id="$(resolve "$1")"
+        [ -n "$id" ] || die "没有匹配的预设: $1（用 yinxiao list 看列表）"
+        nm=$(rows | awk -F'\t' -v i="$id" '$1==i{print $2}')
+        apply "$(sink_of "$id")" "$nm"
+        ;;
+esac

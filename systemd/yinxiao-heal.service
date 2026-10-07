@@ -1,0 +1,15 @@
+[Unit]
+Description=yinxiao: USB DAC 上线自愈（恢复音效链路与输出）
+Documentation=file://%h/.local/share/yinxiao/README.md
+After=pipewire.service pipewire-pulse.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/yinxiao heal
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target

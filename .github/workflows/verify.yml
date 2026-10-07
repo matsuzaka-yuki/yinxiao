@@ -1,0 +1,44 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: 依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsndfile1 || true
+          python3 -m pip install --quiet numpy
+
+      - name: 语法检查
+        run: |
+          python3 -m compileall -q lib/*.py
+          for f in install.sh uninstall.sh bin/yinxiao; do bash -n "$f"; done
+
+      - name: 生成 4 组厅堂脉冲响应
+        run: python3 lib/gen_irs.py
+
+      - name: 生成 17 个 EQ / 矩阵型预设
+        run: python3 lib/gen_presets.py "$PWD/out/pipewire/pipewire.conf.d" ci-dummy-sink
+
+      - name: 生成 4 个厅堂混响预设
+        run: python3 lib/gen_reverb.py --dry-run
+
+      # 这一步是整个项目的底线：σmax ≤ 1 才算“数学上永不削顶”
+      - name: 验证峰值增益 σmax ≤ 1
+        run: |
+          echo "=== EQ / 矩阵型 17 个 ==="
+          python3 lib/eval_graph.py "$PWD/out/pipewire/pipewire.conf.d"
+          echo
+          echo "=== 厅堂混响 4 个 ==="
+          python3 lib/eval_graph.py /tmp/yxreverb

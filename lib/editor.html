@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>yinxiao 音效编辑器</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1f27; --panel2:#222731; --line:#2e3542;
+    --fg:#dfe4ec; --dim:#8b95a7; --accent:#4ea1ff; --good:#3ddc84;
+    --warn:#ffb020; --bad:#ff5c5c; --curve:#4ea1ff; --sigma:#3ddc84; --side:#c58bff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:13px/1.5 -apple-system,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+       display:flex;height:100vh;overflow:hidden}
+  #side{width:236px;flex:none;background:var(--panel);border-right:1px solid var(--line);
+        display:flex;flex-direction:column}
+  #side h1{font-size:13px;margin:0;padding:12px 14px;border-bottom:1px solid var(--line);
+           font-weight:600;letter-spacing:.4px}
+  #plist{overflow:auto;flex:1;padding:6px}
+  .p{padding:7px 9px;border-radius:6px;cursor:pointer;margin-bottom:2px}
+  .p:hover{background:var(--panel2)}
+  .p.sel{background:#26456e;box-shadow:inset 0 0 0 1px var(--accent)}
+  .p .n{font-weight:600}
+  .p .d{color:var(--dim);font-size:11px;margin-top:2px}
+  .p.live .n::after{content:" ●";color:var(--good)}
+  #main{flex:1;display:flex;flex-direction:column;min-width:0}
+  #top{display:flex;align-items:center;gap:10px;padding:9px 14px;
+       border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+  #top .t{font-weight:600;font-size:14px}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+       padding:5px 11px;border-radius:6px;cursor:pointer;font-size:12px}
+  .btn:hover{border-color:var(--accent)}
+  .btn.on{background:#1d4f2f;border-color:var(--good);color:#c9ffdd}
+  .btn.pri{background:#1c477a;border-color:var(--accent)}
+  .btn:disabled{opacity:.45;cursor:default}
+  .sp{flex:1}
+  .pill{padding:3px 9px;border-radius:99px;background:var(--panel2);
+        border:1px solid var(--line);font-size:11px;color:var(--dim)}
+  #canvasWrap{flex:1;position:relative;min-height:0}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
+  #bottom{border-top:1px solid var(--line);background:var(--panel);
+          padding:10px 14px;display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+  .grp{display:flex;flex-direction:column;gap:5px;min-width:190px}
+  .grp>.h{color:var(--dim);font-size:11px;letter-spacing:.5px}
+  .row{display:flex;align-items:center;gap:8px}
+  .row label{width:44px;color:var(--dim);font-size:11px}
+  .row input[type=range]{flex:1;accent-color:var(--accent);height:16px}
+  .row .val{width:62px;text-align:right;font-variant-numeric:tabular-nums;font-size:11px}
+  .stat{font-variant-numeric:tabular-nums}
+  .ok{color:var(--good)} .wn{color:var(--warn)} .bd{color:var(--bad)} .dm{color:var(--dim)}
+  #hint{position:absolute;left:12px;bottom:10px;color:var(--dim);font-size:11px;
+        background:rgba(20,22,26,.82);padding:5px 9px;border-radius:6px;border:1px solid var(--line)}
+  .kbd{background:#2b3340;padding:0 4px;border-radius:3px;font-size:10px}
+</style>
+</head>
+<body>
+<div id="side">
+  <h1>音效预设 <span style="color:var(--dim);font-weight:400" id="cnt"></span></h1>
+  <div id="plist"></div>
+</div>
+
+<div id="main">
+  <div id="top">
+    <span class="t" id="pname">—</span>
+    <span class="pill" id="psink">默认输出: —</span>
+    <label class="pill" style="cursor:pointer" title="点击左侧预设时，直接把系统输出切到它">
+      <input type="checkbox" id="cSwitch" checked> 点击即切换输出</label>
+    <span class="sp"></span>
+    <button class="btn" id="bLive" title="拖动时把参数实时推给运行中的 filter-chain">实时试听: 关</button>
+    <button class="btn pri" id="bSelect" title="把这个预设设为系统默认输出，才能听到">设为当前输出</button>
+    <button class="btn" id="bSave">保存到磁盘</button>
+    <button class="btn" id="bRevert" title="放弃未保存的修改，回到磁盘上的状态">放弃修改</button>
+    <button class="btn" id="bBak" title="回滚到上一次保存之前的版本（.bak）">回滚上次保存</button>
+  </div>
+  <div id="canvasWrap">
+    <canvas id="cv"></canvas>
+    <div id="hint">拖动圆点改频率/增益 · 滚轮改 Q · <span class="kbd">Del</span> 删除所选</div>
+  </div>
+  <div id="bottom">
+    <div class="grp" id="bandGrp">
+      <div class="h">选中的滤波器</div>
+      <div class="row"><label>类型</label><span id="bKind" class="stat">—</span></div>
+      <div class="row"><label>Freq</label><input type="range" id="sF" min="20" max="20000" step="1"><span class="val" id="vF">—</span></div>
+      <div class="row"><label>Q</label><input type="range" id="sQ" min="0.2" max="8" step="0.02"><span class="val" id="vQ">—</span></div>
+      <div class="row"><label>Gain</label><input type="range" id="sG" min="-18" max="18" step="0.1"><span class="val" id="vG">—</span></div>
+      <div class="row"><button class="btn" id="bAdd">+ 加一段峰值</button>
+        <button class="btn" id="bDel">删除所选</button></div>
+    </div>
+    <div class="grp" id="revGrp" style="display:none">
+      <div class="h">混响参数</div>
+      <div class="row"><label>干湿比</label><input type="range" id="sWet" min="0" max="2" step="0.01"><span class="val" id="vWet">—</span></div>
+      <div class="stat" style="font-size:11px">
+        1kHz 湿/干 <span id="vMix">—</span><br>
+        混响时间 RT60 <span id="vRt">—</span><br>
+        预延迟 <span id="vPre">—</span><br>
+        湿路高通 <span id="vWhp">—</span><br>
+        脉冲响应 <span id="vIr" class="dm">—</span>
+      </div>
+    </div>
+    <div class="grp" id="matGrp" style="display:none">
+      <div class="h">矩阵参数</div>
+      <div class="row"><label id="m1l">宽度 k</label><input type="range" id="sK" min="-0.8" max="1.2" step="0.01"><span class="val" id="vK">—</span></div>
+      <div class="row" id="rowSub"><label id="m2l">低频增益</label><input type="range" id="sS" min="0" max="1.5" step="0.01"><span class="val" id="vS">—</span></div>
+    </div>
+    <div class="grp">
+      <div class="h">安全 / 电平</div>
+      <div class="row"><label>preamp</label>
+        <input type="range" id="sP" min="-24" max="6" step="0.25"><span class="val" id="vP">—</span></div>
+      <div class="row"><label></label><label style="width:auto;color:var(--fg)">
+        <input type="checkbox" id="cAuto" checked> 自动归一化（防削顶）</label></div>
+      <div class="stat" style="font-size:11px">
+        峰值增益 σmax = <span id="vSig">—</span><br>
+        削顶余量 = <span id="vMarg">—</span><br>
+        <span id="vVerdict"></span>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="h">曲线读数（鼠标处）</div>
+      <div class="stat" style="font-size:11px">
+        频率 <span id="rF">—</span><br>
+        居中内容 <span id="rC">—</span><br>
+        侧向内容 <span id="rS">—</span><br>
+        最坏情况 <span id="rX">—</span><br>
+        单声道下混 <span id="rM">—</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const cv = $('#cv'), ctx = cv.getContext('2d');
+const FMIN = 20, FMAX = 20000, DBMIN = -18, DBMAX = 18;
+let presets = [], cur = null, sel = -1, live = false, lastA = null, wired = false;
+let PREFIX = 'effect_input.yx_';
+let busy = false, pending = null, mouseF = 1000, activeSink = '';
+
+const PAD = {l:42, r:40, t:16, b:24};
+const PW = () => Math.max(10, cv.clientWidth  - PAD.l - PAD.r);
+const PH = () => Math.max(10, cv.clientHeight - PAD.t - PAD.b);
+const xf = f => PAD.l + (Math.log10(f/FMIN) / Math.log10(FMAX/FMIN)) * PW();
+const yf = d => PAD.t + (DBMAX - d) / (DBMAX - DBMIN) * PH();
+
+function resize(){
+  const r = cv.parentElement.getBoundingClientRect(), dpr = devicePixelRatio||1;
+  cv.width = r.width*dpr; cv.height = r.height*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  draw();
+}
+addEventListener('resize', resize);
+
+const GRIDF = [20,30,50,100,200,300,500,1000,2000,3000,5000,10000,20000];
+const LABELF = new Set([20,50,100,200,500,1000,2000,5000,10000,20000]);
+const fmtF = f => f>=1000 ? (f/1000)+'k' : String(f);
+
+function draw(){
+  const W = cv.clientWidth, H = cv.clientHeight;
+  ctx.clearRect(0,0,W,H);
+  // 网格
+  ctx.strokeStyle = '#242a34'; ctx.lineWidth = 1;
+  ctx.font = '10px ui-monospace,monospace'; ctx.fillStyle = '#5d6779';
+  ctx.textAlign = 'center';
+  GRIDF.forEach(f=>{
+    const x = Math.round(xf(f))+.5;
+    ctx.beginPath(); ctx.moveTo(x,PAD.t); ctx.lineTo(x,PAD.t+PH()); ctx.stroke();
+    if (LABELF.has(f)) ctx.fillText(fmtF(f), x, H-7);
+  });
+  ctx.textAlign = 'right';
+  for (let d=DBMIN; d<=DBMAX; d+=6){
+    const y = Math.round(yf(d))+.5;
+    ctx.strokeStyle = d===0 ? '#3b4454' : '#242a34';
+    ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(PAD.l+PW(),y); ctx.stroke();
+    ctx.fillStyle = '#5d6779'; ctx.fillText((d>0?'+':'')+d, PAD.l-6, y+3);
+  }
+  ctx.textAlign = 'left';
+  if (!lastA) return;
+  const A = lastA, N = A.freqs.length;
+  const xs = A.freqs.map(f=>xf(f));
+  const path = arr => { ctx.beginPath();
+    for (let i=0;i<N;i++){ const y=yf(Math.max(DBMIN*1.5,Math.min(DBMAX*1.5,arr[i])));
+      i?ctx.lineTo(xs[i],y):ctx.moveTo(xs[i],y); } };
+
+  const main = A.corr_db || A.ch_db;
+  const sig  = A.sigma_db;
+
+  // 噪声型（混响）先画半透明的原始谱线：它本来就是尖的，但那是 IR 真实的频谱
+  if (A.ch_smooth){
+    path(main); ctx.strokeStyle = 'rgba(78,161,255,.30)'; ctx.lineWidth = 1; ctx.stroke();
+    path(sig);  ctx.strokeStyle = 'rgba(61,220,132,.30)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+  // σmax 包络（最坏情况增益）
+  path(A.sigma_smooth || sig); ctx.lineTo(PAD.l+PW(),PAD.t+PH()); ctx.lineTo(PAD.l,PAD.t+PH()); ctx.closePath();
+  ctx.fillStyle = 'rgba(61,220,132,.10)'; ctx.fill();
+  path(A.sigma_smooth || sig); ctx.strokeStyle = 'rgba(61,220,132,.55)'; ctx.lineWidth = 1; ctx.stroke();
+
+  // 主曲线：居中内容响应（混响型画 1/3 倍频程平滑版，否则是一团毛刺）
+  const drawMain = A.ch_smooth || main;
+  path(drawMain); ctx.lineTo(PAD.l+PW(), yf(0)); ctx.lineTo(PAD.l, yf(0)); ctx.closePath();
+  ctx.fillStyle = 'rgba(78,161,255,.14)'; ctx.fill();
+  path(drawMain); ctx.strokeStyle='#4ea1ff'; ctx.lineWidth = 2; ctx.stroke();
+
+  // 侧向内容 / 单声道下混只在加宽、sub 类有意义；混响型两路互不串接，画出来是重复线
+  const cross = cur && (cur.kind === 'widen' || cur.kind === 'sub');
+  if (cross){
+    ctx.setLineDash([5,4]); path(A.side_db);
+    ctx.strokeStyle = '#c58bff'; ctx.lineWidth = 1.4; ctx.stroke(); ctx.setLineDash([]);
+    ctx.setLineDash([2,3]); path(A.mono_db);
+    ctx.strokeStyle = 'rgba(255,176,32,.8)'; ctx.lineWidth = 1.2; ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // 滤波器手柄
+  if (cur && cur.kind === 'eq'){
+    cur.bands.forEach((b,i)=>{
+      const x = xf(b.freq), y = yf(b.gain);
+      const on = i===sel;
+      ctx.beginPath(); ctx.arc(x,y,on?7:5,0,7);
+      ctx.fillStyle = on?'#4ea1ff':'#1b1f27';
+      ctx.strokeStyle = on?'#fff':'#4ea1ff'; ctx.lineWidth = 2; ctx.fill(); ctx.stroke();
+      if (on){ ctx.fillStyle='#dfe4ec'; ctx.font='11px ui-monospace,monospace';
+        ctx.fillText(`${b.kind}  ${Math.round(b.freq)}Hz  Q${b.q.toFixed(2)}  ${b.gain>=0?'+':''}${b.gain.toFixed(1)}dB`, x+10, y-10); }
+    });
+  }
+}
+
+// ---------- 与服务端通信 ----------
+async function post(path, body){
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify(body)});
+  return await r.json();
+}
+function schedule(spec, opts){
+  if (!cur) return;
+  pending = {id: cur.id, spec, opts: opts||{}};
+  if (busy) return;
+  flush();
+}
+async function flush(){
+  if (!pending || !cur) return;
+  const job = pending; pending = null; busy = true;
+  try{
+    const r = await post('/api/apply', Object.assign(
+      {preset_id: job.id, spec: job.spec, live: live, auto_preamp: $('#cAuto').checked},
+      job.opts));
+    if (r.error){ console.error(r.error); }
+    if (r.analysis){ lastA = r.analysis; draw(); }   // 异步返回后必须重绘，否则曲线滞后于拖动
+    if (r.preamp !== undefined){ cur.preamp = r.preamp; $('#sP').value = r.preamp; $('#vP').textContent = r.preamp.toFixed(2)+' dB'; }
+    if (r.live_error){ $('#bLive').classList.add('wn'); $('#bLive').title = r.live_error; }
+    if (r.saved){ $('#bSave').textContent = '已保存 ✓'; setTimeout(()=>$('#bSave').textContent='保存到磁盘',1200); }
+    if (r.dirty !== undefined && cur){
+      cur.dirty = r.dirty;
+      const el = document.querySelector('.p.sel .n');
+      if (el) el.textContent = cur.name + (r.dirty ? ' *' : '');
+    }
+    updateStats();
+  }catch(e){ console.error(e); }
+  busy = false;
+  if (pending) flush();
+}
+function updateStats(){
+  if (!lastA) return;
+  // 混响型：用服务端给的严格解析上界判定（曲线上的 σmax 会低估噪声型 IR 的峰值）
+  const bnd = lastA.sigma_bound;
+  const sm = bnd !== undefined && bnd !== null ? Math.pow(10, bnd/20) : lastA.sigma_max;
+  $('#vSig').textContent = sm.toFixed(4)
+    + (bnd !== undefined && bnd !== null ? '（解析上界）' : '');
+  const marg = -20*Math.log10(sm);
+  const e = $('#vMarg');
+  e.textContent = (marg>=0?'+':'') + marg.toFixed(2) + ' dB';
+  const v = $('#vVerdict');
+  if (sm <= 1.0005){ v.textContent = '✔ 任意输入下都不会削顶'; v.className='ok'; }
+  else { v.textContent = '⚠ 可能削顶（最坏情况超 '+(-marg).toFixed(2)+' dB）'; v.className='bd'; }
+  if (lastA.mix_1k_db !== undefined && lastA.mix_1k_db !== null)
+    $('#vMix').textContent = lastA.mix_1k_db.toFixed(1) + ' dB';
+}
+
+// ---------- 交互 ----------
+function pick(ev){
+  if (!cur || cur.kind!=='eq') return -1;
+  const r = cv.getBoundingClientRect();
+  const mx = ev.clientX-r.left, my = ev.clientY-r.top;
+  let best=-1, bd=14;
+  cur.bands.forEach((b,i)=>{
+    const d = Math.hypot(xf(b.freq)-mx, yf(b.gain)-my);
+    if (d<bd){ bd=d; best=i; }
+  });
+  return best;
+}
+let drag = null;
+cv.addEventListener('pointerdown', ev=>{
+  const i = pick(ev);
+  if (i>=0){ sel=i; drag=i;
+    try{ cv.setPointerCapture(ev.pointerId); }catch(_){}
+    syncBandUI(); draw(); }
+  else { sel=-1; syncBandUI(); draw(); }
+});
+cv.addEventListener('pointermove', ev=>{
+  const r = cv.getBoundingClientRect();
+  const fx = Math.max(0,Math.min(1,(ev.clientX-r.left-PAD.l)/PW()));
+  mouseF = FMIN*Math.pow(FMAX/FMIN, fx);
+  showReadout();
+  if (drag===null || !cur) return;
+  const b = cur.bands[drag];
+  b.freq = Math.round(FMIN*Math.pow(FMAX/FMIN, fx));
+  const fy = Math.max(0,Math.min(1,(ev.clientY-r.top-PAD.t)/PH()));
+  b.gain = Math.round((DBMAX - fy*(DBMAX-DBMIN))*10)/10;
+  syncBandUI();
+  schedule({bands: cur.bands});
+});
+cv.addEventListener('pointerup', ()=>{ drag=null; });
+cv.addEventListener('wheel', ev=>{
+  const i = pick(ev);
+  const idx = i>=0 ? i : sel;
+  if (idx<0 || !cur) return;
+  ev.preventDefault();
+  const b = cur.bands[idx];
+  b.q = Math.max(0.2, Math.min(8, b.q * (ev.deltaY<0 ? 1.12 : 1/1.12)));
+  b.q = Math.round(b.q*100)/100;
+  sel = idx; syncBandUI(); schedule({bands: cur.bands});
+},{passive:false});
+cv.addEventListener('mouseleave', ()=>{ $('#rF').textContent='—'; });
+
+function showReadout(){
+  if (!lastA||!cur) return;
+  const A = lastA, N = A.freqs.length;
+  let i = 0, bd = 1e9;
+  for (let k=0;k<N;k++){ const d = Math.abs(Math.log(A.freqs[k]/mouseF)); if (d<bd){bd=d;i=k;} }
+  $('#rF').textContent = Math.round(A.freqs[i])+' Hz';
+  const f = v => (v>=0?'+':'')+v.toFixed(2)+' dB';
+  $('#rC').textContent = f(A.corr_db[i]);
+  $('#rS').textContent = f(A.side_db[i]);
+  $('#rX').textContent = f(A.sigma_db[i]);
+  $('#rM').textContent = f(A.mono_db[i]);
+}
+
+// ---------- 侧栏 ----------
+const sinkNameOf = id => PREFIX + id.replace(/-/g,'_');
+function markOne(d, id){
+  d.classList.toggle('sel',  !!(cur && cur.id === id));
+  d.classList.toggle('live', activeSink === sinkNameOf(id));
+  const n = d.querySelector('.n');
+  if (n) n.textContent = (presets.find(p=>p.id===id)||{}).name
+        + ((presets.find(p=>p.id===id)||{}).dirty ? ' *':'');
+}
+function markActive(){ document.querySelectorAll('.p').forEach(d=>markOne(d, d.dataset.id)); }
+function highlight(id){ markActive(); }
+function renderList(){
+  const el = $('#plist'); el.innerHTML = '';
+  $('#cnt').textContent = presets.length;
+  presets.forEach(p=>{
+    const d = document.createElement('div');
+    d.dataset.id = p.id;
+    d.className = 'p';
+    d.innerHTML = `<div class="n">${p.name}${p.dirty?' *':''}</div><div class="d">${p.desc||p.id}</div>`;
+    d.onclick = ()=>select(p.id, {switch:true});   // 点一下就切过去
+    el.appendChild(d);
+    markOne(d, p.id);
+  });
+}
+async function select(id, opts){
+  opts = opts || {};
+  pending = null;                 // 丢弃属于上一个预设的待发改动
+  cur = presets.find(p=>p.id===id);
+  sel = -1; drag = null;
+  highlight(id);                  // ← 修：让高亮跟着走
+  $('#pname').textContent = cur.name;
+  const isEq = cur.kind==='eq', isRev = cur.kind==='reverb';
+  $('#bandGrp').style.display = isEq?'flex':'none';
+  $('#matGrp').style.display = (!isEq && !isRev)?'flex':'none';
+  $('#revGrp').style.display = isRev?'flex':'none';
+  $('#hint').textContent = isRev
+    ? '混响型：拖下方「干湿比」改混响量 · 湿/干、RT60 实时回读'
+    : (isEq ? '拖动圆点改频率/增益 · 滚轮改 Q · Del 删除所选'
+            : '矩阵型：用下方「矩阵参数」调宽度 / 分频点');
+  if (isRev){
+    const r = cur.reverb||{};
+    $('#sWet').value = r.wet ?? 0;
+    $('#vWet').textContent = (r.wet ?? 0).toFixed(2);
+    $('#vRt').textContent = r.rt60 ? r.rt60.toFixed(2)+' s' : '—';
+    $('#vPre').textContent = r.predelay_ms != null ? r.predelay_ms+' ms' : '—';
+    $('#vWhp').textContent = r.wet_hp ? Math.round(r.wet_hp)+' Hz' : '—';
+    $('#vIr').textContent = r.ir || '—';
+    $('#vMix').textContent = '—';
+  }
+  if (!isEq && !isRev){
+    const m = cur.matrix||{};
+    const isW = 'k' in m;
+    $('#m1l').textContent = isW?'宽度 k':'分频点';
+    if (isW){ $('#sK').min=-0.8; $('#sK').max=1.2; $('#sK').step=0.01; $('#sK').value=m.k; }
+    else   { $('#sK').min=40;   $('#sK').max=300; $('#sK').step=1;    $('#sK').value=m.xfreq||90; }
+    $('#vK').textContent = isW ? m.k.toFixed(2) : (m.xfreq||90)+' Hz';
+    $('#rowSub').style.display = isW?'none':'';      // 加宽类没有 sub 通道，整行隐藏
+    if (!isW){ $('#sS').value = m.sub; $('#vS').textContent = m.sub.toFixed(2); }
+  }
+  $('#sP').value = cur.preamp||0;
+  $('#sP').disabled = $('#cAuto').checked;
+  $('#vP').textContent = (cur.preamp||0).toFixed(2)+' dB';
+  $('#bAdd').disabled = !isEq;               // 混响/矩阵型不支持直接加滤波器段
+  syncBandUI();
+  if (opts.switch && $('#cSwitch').checked){     // 点一下就切过去（可关）
+    await post('/api/select', {preset_id: id});
+    await refreshSink();
+  }
+  const r = await post('/api/apply', {preset_id:id, spec:{}, live:false});
+  if (r.analysis) lastA = r.analysis;
+  updateStats(); draw();
+}
+function syncBandUI(){
+  const b = cur && cur.kind==='eq' && sel>=0 ? cur.bands[sel] : null;
+  const en = !!b;
+  ['#sF','#sQ','#sG','#bDel'].forEach(s=>$(s).disabled = !en);
+  if (!b){ $('#bKind').textContent='—'; $('#vF').textContent='—'; $('#vQ').textContent='—'; $('#vG').textContent='—'; return; }
+  $('#bKind').textContent = ({HP:'高通',LP:'低通',LS:'低架',HS:'高架',PK:'峰值'})[b.kind]||b.kind;
+  $('#sF').value = b.freq; $('#vF').textContent = Math.round(b.freq)+' Hz';
+  $('#sQ').value = b.q;    $('#vQ').textContent = b.q.toFixed(2);
+  $('#sG').value = b.gain; $('#vG').textContent = (b.gain>=0?'+':'')+b.gain.toFixed(1)+' dB';
+}
+function onSlider(){
+  if (!cur) return;
+  if (sel>=0 && cur.bands[sel]){
+    const b = cur.bands[sel];
+    b.freq = +$('#sF').value; b.q = +$('#sQ').value; b.gain = +$('#sG').value;
+    syncBandUI(); schedule({bands: cur.bands});
+  }
+}
+['#sF','#sQ','#sG'].forEach(s=>$(s).addEventListener('input', onSlider));
+$('#sWet').addEventListener('input', ()=>{ if(!cur||!cur.reverb) return;
+  cur.reverb.wet = +$('#sWet').value;
+  $('#vWet').textContent = cur.reverb.wet.toFixed(2);
+  schedule({reverb: cur.reverb}); });
+$('#sK').addEventListener('input', ()=>{
+  if (!cur||!cur.matrix) return;
+  cur.matrix['k' in cur.matrix ? 'k' : 'xfreq'] = +$('#sK').value;
+  $('#vK').textContent = 'k' in cur.matrix ? (+$('#sK').value).toFixed(2) : $('#sK').value+' Hz';
+  schedule({matrix: cur.matrix});
+});
+$('#sS').addEventListener('input', ()=>{ if(!cur||!cur.matrix) return;
+  cur.matrix.sub = +$('#sS').value; $('#vS').textContent=(+$('#sS').value).toFixed(2);
+  schedule({matrix: cur.matrix}); });
+$('#sP').addEventListener('input', ()=>{ if(!cur) return;
+  cur.preamp = +$('#sP').value; $('#vP').textContent = cur.preamp.toFixed(2)+' dB';
+  schedule({preamp: cur.preamp}, {auto_preamp:false}); });
+$('#cAuto').addEventListener('change', ()=>{ const on=$('#cAuto').checked;
+  $('#sP').disabled = on;
+  $('#bAdd').disabled = !(cur && cur.kind==='eq');
+  schedule({bands:cur?cur.bands:[]}); });
+
+$('#bLive').onclick = ()=>{ live = !live;
+  $('#bLive').textContent = '实时试听: ' + (live?'开':'关');
+  $('#bLive').classList.toggle('on', live);
+  if (live && cur) schedule(cur.kind==='reverb' ? {reverb:cur.reverb} : {bands:cur.bands}); };
+$('#bSelect').onclick = async ()=>{ if (!cur) return;
+  await post('/api/select', {preset_id: cur.id});
+  await refreshSink(); };
+$('#bSave').onclick = async ()=>{
+  if (!cur) return;
+  const r = await post('/api/apply', {preset_id:cur.id, spec:{bands:cur.bands, matrix:cur.matrix, reverb:cur.reverb},
+                                      save:true, live:false, auto_preamp:$('#cAuto').checked});
+  if (r.analysis) lastA = r.analysis;
+  if (r.preamp!==undefined){ cur.preamp=r.preamp; $('#sP').value=r.preamp; $('#vP').textContent=r.preamp.toFixed(2)+' dB'; }
+  $('#bSave').textContent = '已保存 ✓'; setTimeout(()=>$('#bSave').textContent='保存到磁盘',1400);
+  await reload(false);
+};
+$('#bRevert').onclick = async ()=>{ if (!cur) return;
+  await post('/api/revert', {preset_id:cur.id}); await reload(false);
+  $('#bSave').textContent = '已复原'; setTimeout(()=>$('#bSave').textContent='保存到磁盘',1200); };
+$('#bBak').onclick = async ()=>{ if (!cur) return;
+  const r = await post('/api/restore_bak', {preset_id:cur.id, live:live});
+  if (r.error) { alert(r.error); return; }
+  await reload(false);
+  $('#bBak').textContent = '已回滚 ✓'; setTimeout(()=>$('#bBak').textContent='回滚上次保存',1400); };
+$('#bAdd').onclick = async ()=>{ if (!cur) return;
+  const r = await post('/api/add_band', {preset_id:cur.id});
+  if (r.analysis) lastA=r.analysis; if (r.error) console.error(r.error);
+  await reload(false); if (cur) sel = cur.bands.length-2; syncBandUI(); draw(); };
+$('#bDel').onclick = async ()=>{ if (!cur||sel<0) return;
+  const nd = cur.bands[sel].node;
+  const r = await post('/api/del_band', {preset_id:cur.id, node:nd});
+  if (r.error) console.error(r.error);
+  await reload(false); sel=-1; syncBandUI(); draw(); };
+addEventListener('keydown', e=>{ if (e.key==='Delete'&&sel>=0&&document.activeElement.tagName!=='INPUT') $('#bDel').click(); });
+
+async function refreshSink(){
+  const st = await (await fetch('/api/state')).json();
+  PREFIX = st.prefix || PREFIX;
+  activeSink = st.active_sink || '';
+  const nm = activeSink.startsWith(PREFIX)
+    ? (presets.find(p=>sinkNameOf(p.id)===activeSink)||{}).name : null;
+  $('#psink').textContent = nm ? ('默认输出: ' + nm) : '默认输出: 直通（无音效）';
+  markActive();
+}
+async function reload(keepSel){
+  const st = await (await fetch('/api/state')).json();
+  presets = st.presets;
+  if (!cur) cur = presets[0];
+  else { const c = presets.find(p=>p.id===cur.id); if (c) Object.assign(cur,c); }
+  renderList(); await refreshSink();
+  if (!wired){ wired = true; }
+  await select(cur.id, {switch:false});
+}
+resize(); reload(true);
+setInterval(()=>{ if(!busy) refreshSink(); }, 4000);
+</script>
+</body>
+</html>

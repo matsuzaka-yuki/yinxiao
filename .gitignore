@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+# 本机状态（安装时生成，不进仓库）
+hw-sink
+last-target
+editor.pid
+editor.log
+*.conf.bak
+presets.tsv.bak
+# 生成物
+ir/*.wav
+ir/*.resp.json
+*.resp.json

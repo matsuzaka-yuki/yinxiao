@@ -1,0 +1,15 @@
+[Unit]
+Description=yinxiao: 音效可视化编辑器 (http://127.0.0.1:8787)
+Documentation=file://%h/.local/share/yinxiao/README.md
+After=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/yinxiao/editor_server.py
+WorkingDirectory=%h/.local/share/yinxiao
+Restart=always
+RestartSec=3
+Nice=10
+
+[Install]
+WantedBy=default.target
